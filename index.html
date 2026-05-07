@@ -120,7 +120,7 @@
     <header>
       <div>
         <h1>📝 메모장</h1>
-        <div class="hint">메모는 <code>notes/</code> 폴더에 .txt 파일로 저장됩니다.</div>
+        <div class="hint">메모는 Firebase Firestore에 저장됩니다.</div>
       </div>
     </header>
 
@@ -138,7 +138,27 @@
 
   <div class="toast" id="toast"></div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import {
+  getFirestore, collection, addDoc, doc, updateDoc, deleteDoc,
+  onSnapshot, query, orderBy, serverTimestamp,
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAc7h_mRYs7mT2RLvpZQew8WdpDrCCaoCo",
+  authDomain: "my-memo-t1.firebaseapp.com",
+  projectId: "my-memo-t1",
+  storageBucket: "my-memo-t1.firebasestorage.app",
+  messagingSenderId: "134490624365",
+  appId: "1:134490624365:web:236be769941345eb5b4a64",
+  measurementId: "G-19RCBH2TNB",
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const memosCol = collection(db, "memos");
+
 const $ = (id) => document.getElementById(id);
 const titleInput = $("title-input");
 const contentInput = $("content-input");
@@ -148,7 +168,7 @@ const memoList = $("memo-list");
 const toastEl = $("toast");
 
 let memos = [];
-let editingFilename = null;
+let editingId = null;
 
 function toast(msg) {
   toastEl.textContent = msg;
@@ -157,39 +177,23 @@ function toast(msg) {
   toast._t = setTimeout(() => toastEl.classList.remove("show"), 1800);
 }
 
-function formatDate(ts) {
-  const d = new Date(ts);
+function tsToDate(ts) {
+  if (!ts) return null;
+  if (typeof ts.toDate === "function") return ts.toDate();
+  if (ts instanceof Date) return ts;
+  return new Date(ts);
+}
+
+function formatDate(d) {
+  if (!d) return "";
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function escapeHtml(str) {
   const div = document.createElement("div");
-  div.textContent = str;
+  div.textContent = str ?? "";
   return div.innerHTML;
-}
-
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || "요청 실패");
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
-
-async function loadMemos() {
-  try {
-    memos = await api("GET", "/api/memos");
-    render();
-  } catch (e) {
-    toast("불러오기 실패: " + e.message);
-  }
 }
 
 function render() {
@@ -197,48 +201,52 @@ function render() {
     memoList.innerHTML = `<div class="empty">아직 메모가 없습니다. 위에서 새 메모를 추가하세요.</div>`;
     return;
   }
-  memoList.innerHTML = memos.map(m => `
+  memoList.innerHTML = memos.map(m => {
+    const updated = tsToDate(m.updatedAt);
+    const created = tsToDate(m.createdAt);
+    const edited = updated && created && Math.abs(updated.getTime() - created.getTime()) > 1500;
+    return `
     <div class="memo-item">
       <div class="memo-title">${escapeHtml(m.title || "(제목 없음)")}</div>
       <div class="memo-content">${escapeHtml(m.content)}</div>
       <div class="memo-meta">
-        <div class="memo-date">${formatDate(m.updatedAt)}${Math.abs(m.updatedAt - m.createdAt) > 1000 ? " (수정됨)" : ""}</div>
+        <div class="memo-date">${formatDate(updated)}${edited ? " (수정됨)" : ""}</div>
         <div class="memo-actions">
-          <button class="secondary" data-edit="${encodeURIComponent(m.filename)}">수정</button>
-          <button class="danger" data-delete="${encodeURIComponent(m.filename)}">삭제</button>
+          <button class="secondary" data-edit="${m.id}">수정</button>
+          <button class="danger" data-delete="${m.id}">삭제</button>
         </div>
       </div>
     </div>
-  `).join("");
+    `;
+  }).join("");
 }
 
 function resetEditor() {
-  editingFilename = null;
+  editingId = null;
   titleInput.value = "";
   contentInput.value = "";
   saveBtn.textContent = "추가";
   cancelBtn.style.display = "none";
 }
 
-function startEdit(filename) {
-  const m = memos.find(x => x.filename === filename);
+function startEdit(id) {
+  const m = memos.find(x => x.id === id);
   if (!m) return;
-  editingFilename = filename;
-  titleInput.value = m.title;
-  contentInput.value = m.content;
+  editingId = id;
+  titleInput.value = m.title || "";
+  contentInput.value = m.content || "";
   saveBtn.textContent = "수정 완료";
   cancelBtn.style.display = "inline-block";
   titleInput.focus();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-async function deleteMemo(filename) {
+async function deleteMemo(id) {
   if (!confirm("이 메모를 삭제하시겠습니까?")) return;
   try {
-    await api("DELETE", `/api/memos/${encodeURIComponent(filename)}`);
-    if (editingFilename === filename) resetEditor();
+    await deleteDoc(doc(db, "memos", id));
+    if (editingId === id) resetEditor();
     toast("삭제됨");
-    await loadMemos();
   } catch (e) {
     toast("삭제 실패: " + e.message);
   }
@@ -253,15 +261,20 @@ saveBtn.addEventListener("click", async () => {
   }
   saveBtn.disabled = true;
   try {
-    if (editingFilename) {
-      await api("PUT", `/api/memos/${encodeURIComponent(editingFilename)}`, { title, content });
+    if (editingId) {
+      await updateDoc(doc(db, "memos", editingId), {
+        title, content, updatedAt: serverTimestamp(),
+      });
       toast("수정됨");
     } else {
-      await api("POST", "/api/memos", { title, content });
+      await addDoc(memosCol, {
+        title, content,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
       toast("저장됨");
     }
     resetEditor();
-    await loadMemos();
   } catch (e) {
     toast("저장 실패: " + e.message);
   } finally {
@@ -274,11 +287,30 @@ cancelBtn.addEventListener("click", resetEditor);
 memoList.addEventListener("click", (e) => {
   const editId = e.target.dataset.edit;
   const delId = e.target.dataset.delete;
-  if (editId) startEdit(decodeURIComponent(editId));
-  if (delId) deleteMemo(decodeURIComponent(delId));
+  if (editId) startEdit(editId);
+  if (delId) deleteMemo(delId);
 });
 
-loadMemos();
+const q = query(memosCol, orderBy("updatedAt", "desc"));
+onSnapshot(q, (snap) => {
+  memos = snap.docs.map(d => {
+    const data = d.data();
+    if (d.metadata.hasPendingWrites) {
+      const now = new Date();
+      if (!data.createdAt) data.createdAt = now;
+      if (!data.updatedAt) data.updatedAt = now;
+    }
+    return { id: d.id, ...data };
+  });
+  memos.sort((a, b) => {
+    const ad = tsToDate(a.updatedAt)?.getTime() ?? 0;
+    const bd = tsToDate(b.updatedAt)?.getTime() ?? 0;
+    return bd - ad;
+  });
+  render();
+}, (err) => {
+  toast("불러오기 실패: " + err.message);
+});
 </script>
 </body>
 </html>
