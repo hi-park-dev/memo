@@ -113,14 +113,33 @@
     transition: opacity 0.2s;
   }
   .toast.show { opacity: 1; }
+  .weather {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: white;
+    border-radius: 999px;
+    padding: 8px 14px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    font-size: 14px;
+    color: #1d1d1f;
+    white-space: nowrap;
+  }
+  .weather .icon { font-size: 18px; line-height: 1; }
+  .weather .temp { font-weight: 600; }
+  .weather .loc { color: #86868b; font-size: 12px; }
 </style>
 </head>
 <body>
   <div class="container">
     <header>
       <div>
-        <h1>📝 메모장</h1>
+        <h1> 메모장</h1>
         <div class="hint">메모는 Firebase Firestore에 저장됩니다.</div>
+      </div>
+      <div class="weather" id="weather" title="현재 날씨">
+        <span class="icon"></span>
+        <span class="temp">날씨 불러오는 중…</span>
       </div>
     </header>
 
@@ -290,6 +309,86 @@ memoList.addEventListener("click", (e) => {
   if (editId) startEdit(editId);
   if (delId) deleteMemo(delId);
 });
+
+const weatherEl = $("weather");
+
+const WEATHER_CODE = {
+  0:  ["", "맑음"],
+  1:  ["", "대체로 맑음"],
+  2:  ["", "구름 조금"],
+  3:  ["", "흐림"],
+  45: ["", "안개"],
+  48: ["", "짙은 안개"],
+  51: ["", "약한 이슬비"],
+  53: ["", "이슬비"],
+  55: ["", "강한 이슬비"],
+  61: ["", "약한 비"],
+  63: ["", "비"],
+  65: ["", "강한 비"],
+  71: ["", "약한 눈"],
+  73: ["", "눈"],
+  75: ["", "강한 눈"],
+  77: ["", "싸락눈"],
+  80: ["", "소나기"],
+  81: ["", "강한 소나기"],
+  82: ["", "매우 강한 소나기"],
+  95: ["", "뇌우"],
+  96: ["", "뇌우(우박)"],
+  99: ["", "강한 뇌우"],
+};
+
+function renderWeather({ icon, text, temp, locName }) {
+  weatherEl.innerHTML = `
+    <span class="icon">${icon}</span>
+    <span class="temp">${temp}°C</span>
+    <span class="loc">${escapeHtml(locName)} · ${escapeHtml(text)}</span>
+  `;
+}
+
+function renderWeatherError(msg) {
+  weatherEl.innerHTML = `<span class="icon"></span><span class="loc">${escapeHtml(msg)}</span>`;
+}
+
+async function fetchWeather(lat, lon, locName) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("API 오류");
+  const data = await res.json();
+  const code = data.current?.weather_code;
+  const temp = Math.round(data.current?.temperature_2m);
+  const [icon, text] = WEATHER_CODE[code] ?? ["", "현재 날씨"];
+  renderWeather({ icon, text, temp, locName });
+}
+
+async function reverseGeocode(lat, lon) {
+  try {
+    const res = await fetch(`https://geocoding-api.open-meteo.com/v1/reverse?latitude=${lat}&longitude=${lon}&language=ko&count=1`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const r = data.results?.[0];
+    return r ? (r.name || r.admin1) : null;
+  } catch { return null; }
+}
+
+function loadWeather() {
+  const fallback = { lat: 37.5665, lon: 126.9780, name: "서울" };
+  if (!navigator.geolocation) {
+    fetchWeather(fallback.lat, fallback.lon, fallback.name).catch(e => renderWeatherError(e.message));
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const { latitude, longitude } = pos.coords;
+      const name = (await reverseGeocode(latitude, longitude)) || "내 위치";
+      fetchWeather(latitude, longitude, name).catch(e => renderWeatherError(e.message));
+    },
+    () => fetchWeather(fallback.lat, fallback.lon, fallback.name).catch(e => renderWeatherError(e.message)),
+    { timeout: 5000, maximumAge: 10 * 60 * 1000 }
+  );
+}
+
+loadWeather();
+setInterval(loadWeather, 10 * 60 * 1000);
 
 const q = query(memosCol, orderBy("updatedAt", "desc"));
 onSnapshot(q, (snap) => {
